@@ -11,8 +11,51 @@ from nltk.corpus import stopwords
 import pandas as pd
 
 # pytorch
+import torch
 from torch import nn
 from torch.nn import Module
+from torch.nn import functional as F
+
+
+def get_vocabulary(tokenized_docs, n):
+    tokens = [token for doc in tokenized_docs for token in doc]
+    unique_tokens = FreqDist(tokens).most_common(n)
+    return [token for token, _ in unique_tokens]
+
+def word2ids(vocabulary):
+    word2id = {}
+    id2word = {}
+    
+    # build both dictionaries
+    for i, word in enumerate(vocabulary):
+        word2id[word] = i
+        id2word[i] = word
+    
+    # add special tokens
+    n = len(word2id)
+    word2id['<s>']   = n 
+    word2id['</s>']  = n + 1
+    word2id['<unk>'] = n + 2
+    id2word[n]       = '<s>'
+    id2word[n + 1]   = '</s>'
+    id2word[n + 2]   = '<unk>'
+    
+    return word2id, id2word
+
+def sample(probs):
+    acc = np.cumsum(probs)       # build cumulative probability
+    val = np.random.uniform()    # get random number between [0, 1]
+    pos = np.argmax((val < acc)) # get the index of the word to sample
+    return pos
+
+def get_preds(raw_logit):
+    probs = F.softmax(raw_logit.detach(), dim=1)
+    y_pred = torch.argmax(probs, dim=1).cpu().numpy()
+    return y_pred
+
+def get_probs(raw_logit):
+    probs = F.softmax(raw_logit.detach(), dim=1)
+    return probs.cpu().numpy()
 
 punctuation = ['.', '...', ',', '!', '¡', '¿', '?', ':', ';', '"', '|', '[', ']', '°', '(', ')', '*', '+', '/', '-', '^', '<', '>', '\'', '&', '@usuario', '<url>']
 
@@ -36,7 +79,7 @@ class NGramBuilder:
     def default_tokenizer(doc):
         return TweetTokenizer().tokenize
     
-    def get_vocabulary(self):
+    def get_voc(self):
         return set(self.word2id.keys())
     
     def remove_punct(self, tokenized_documents):
@@ -58,8 +101,7 @@ class NGramBuilder:
         # traverse each doc
         for doc in tokenized_docs:
             # add padding
-            doc = ([self.SOS]*(N - 1) if start_padding else []) + \
-                    doc + ([self.EOS] if end_padding else [])
+            doc = ([self.SOS]*(N - 1) if start_padding else []) + doc + ([self.EOS] if end_padding else [])
             # get ids    
             ids = self.get_ids(doc)
             # traverse each word as center and build ngrams
@@ -97,6 +139,7 @@ class NGramBuilder:
         self.voc_size = len(self.word2id)
         self.build_emb_matrix()
         
+        
         return self.__transform(tokenized_docs, start_padding=True, end_padding=True)
     
     def transform(self, documents: list[list or str], start_padding=True, end_padding=True):
@@ -126,13 +169,6 @@ class NGramBuilder:
         return [self.id2word.get(tok_id) for tok_id in docs_as_ids]
     
     
-
-def sample(probs):
-    acc = np.cumsum(probs)       # build cumulative probability
-    val = np.random.uniform()    # get random number between [0, 1]
-    pos = np.argmax((val < acc)) # get the index of the word to sample
-    return pos
-
     
 class NGramNeuralModel:
     def __init__(self, NGram: NGramBuilder, neuralModel:nn.Module):
@@ -167,8 +203,8 @@ class NGramNeuralModel:
         log_prob = np.sum(np.log(cond_probs))
         return np.exp(log_prob) if ret_probs else log_prob
         
-    def generate_sequence(self, use_gpu=False, max_length=100):
-        sequence = ['<s>']*(self.NGram.N - 1)
+    def generate_sequence(self, start=None, use_gpu=False, max_length=100):
+        sequence = ['<s>']*(self.NGram.N - 1) if start == None else start
         context = [token for token in sequence]
         while sequence[-1] != '</s>' and len(sequence) < max_length:
             word = self.predict(context, use_gpu)
